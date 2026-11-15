@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #FAF7F0;
+  --color-surface: #F3EFE6;
+  --color-primary: #0F5C5C;
+  --color-primary-hover: #0A4242;
+  --color-secondary: #A83B24;
+  --color-secondary-hover: #8A2F1B;
+  --color-coral: #C84B31;
+  --color-charcoal: #232323;
+  --color-slate: #524E48;
+  --color-border: #D6D1C7;
+  --color-success-bg: #E3EFEF;
+  --color-success-text: #0A4242;
+  --color-pending-bg: #FEF3C7;
+  --color-pending-text: #78350F;
+  --color-pending-border: #D97706;
+  --color-error-bg: #FEE2E2;
+  --color-error-text: #B91C1C;
+  --color-locked-bg: #EFECE4;
+
+  --font-heading: 'Plus Jakarta Sans', sans-serif;
+  --font-body: 'Atkinson Hyperlegible', sans-serif;
+}
+
+/* Base styles enforcing Kinnect UI Spec v2 */
+:root {
+  font-family: 'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  color: #232323;
+  background-color: #FAF7F0;
+  letter-spacing: +0.01em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+h1, h2 {
+  letter-spacing: -0.015em;
+}
+
+/* Enforce Atkinson Hyperlegible on all data, codes and pre elements (no third font) */
+code, pre, kbd, samp {
+  font-family: 'Atkinson Hyperlegible', sans-serif !important;
+  letter-spacing: +0.01em;
+}
+
+/* Global solid high-contrast focus indicator (passes 5.9:1) */
+:focus-visible {
+  outline: 3px solid #A83B24 !important;
+  outline-offset: 2px !important;
+}
+
+/* Accessibility: Respect user motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
