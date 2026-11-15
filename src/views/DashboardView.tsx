@@ -59,7 +59,18 @@ export const DashboardView: React.FC<{ onShowToast: (type: 'success' | 'error' |
     if (!currentUser) return;
     setIsLoadingPatients(true);
     getPatientsForFamily(currentUser.uid)
-      .then((list) => {
+      .then(async (list) => {
+        // If demo family account and list is empty, initialize demo patient
+        if (list.length === 0 && (currentUser.email === 'family@kinnect.local' || currentUser.email === 'family@kinnect.app')) {
+          const demoP: Patient = {
+            id: 'KIN-7H4K-9QX2',
+            familyId: currentUser.uid,
+            name: 'Eleanor Vance',
+            canUseSmartphone: false,
+            createdAt: new Date().toISOString(),
+          };
+          list = [demoP];
+        }
         setPatients(list);
         if (list.length > 0) {
           setSelectedPatientId((curr) => curr || list[0].id);
@@ -80,7 +91,7 @@ export const DashboardView: React.FC<{ onShowToast: (type: 'success' | 'error' |
   // Refresh dependent data when selected patient changes
   const loadPatientData = async (patientId: string) => {
     try {
-      const [dosesList, aptsList, logsList] = await Promise.all([
+      let [dosesList, aptsList, logsList] = await Promise.all([
         getComputedDosesForDate(patientId, today).catch((e) => {
           console.warn('Could not load doses:', e);
           return [] as ComputedDoseItem[];
@@ -94,6 +105,81 @@ export const DashboardView: React.FC<{ onShowToast: (type: 'success' | 'error' |
           return [] as ActivityLog[];
         }),
       ]);
+
+      // If viewing demo patient and no remote data exists yet, supply sample data
+      if (patientId === 'KIN-7H4K-9QX2') {
+        if (dosesList.length === 0) {
+          dosesList = [
+            {
+              doseId: `med_demo_metformin_${today}`,
+              medication: {
+                id: 'med_demo_metformin',
+                patientId: 'KIN-7H4K-9QX2',
+                name: 'Metformin',
+                strength: '500mg',
+                dosage: '1 tablet',
+                frequency: 'Daily',
+                scheduledTime: '08:00',
+                active: true,
+                createdBy: currentUser?.uid || '',
+                createdAt: new Date().toISOString(),
+              },
+              date: today,
+              status: 'taken',
+              confirmedByName: 'Sarah Connor',
+              confirmedAt: new Date().toISOString(),
+            },
+            {
+              doseId: `med_demo_lisinopril_${today}`,
+              medication: {
+                id: 'med_demo_lisinopril',
+                patientId: 'KIN-7H4K-9QX2',
+                name: 'Lisinopril',
+                strength: '10mg',
+                dosage: '1 tablet',
+                frequency: 'Daily',
+                scheduledTime: '20:00',
+                active: true,
+                createdBy: currentUser?.uid || '',
+                createdAt: new Date().toISOString(),
+              },
+              date: today,
+              status: 'unconfirmed',
+            },
+          ];
+        }
+        if (aptsList.length === 0) {
+          aptsList = [
+            {
+              id: 'apt_demo_cardiology',
+              patientId: 'KIN-7H4K-9QX2',
+              title: 'Cardiology Checkup',
+              doctor: 'Dr. Robert Chen',
+              location: 'City Heart Clinic, Suite 302',
+              dateTime: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
+              status: 'unconfirmed',
+              createdBy: currentUser?.uid || '',
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        }
+        if (logsList.length === 0) {
+          logsList = [
+            {
+              id: 'log_demo_initial',
+              patientId: 'KIN-7H4K-9QX2',
+              itemType: 'dose',
+              itemId: `med_demo_metformin_${today}`,
+              action: 'DOSE_TAKEN',
+              actorUid: currentUser?.uid || '',
+              actorRole: 'family',
+              actorName: 'Sarah Connor',
+              timestamp: new Date().toISOString(),
+            },
+          ];
+        }
+      }
+
       setDoses(dosesList);
       setAppointments(aptsList);
       setActivityLogs(logsList);

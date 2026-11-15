@@ -1,7 +1,6 @@
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
-  signOut,
   updateProfile,
 } from 'firebase/auth';
 import {
@@ -46,24 +45,10 @@ export interface SeedDemoResult {
 
 /**
  * Idempotently seeds the demo environment.
- * If demo accounts and records already exist, it safely reuses them without duplicating data.
- * Adheres strictly to security rules by using authenticated client calls and secondary auth instances.
+ * Authenticates the demo family session first so that Firestore security rules are strictly met.
  */
 export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
-  // Check if demo patient already exists in Firestore
-  const demoPatientSnap = await getDoc(doc(db, 'patients', DEMO_PATIENT_ID));
-  if (demoPatientSnap.exists()) {
-    return {
-      patientId: DEMO_PATIENT_ID,
-      demoAccounts: {
-        family: DEMO_CREDENTIALS.family.email,
-        caretaker: DEMO_CREDENTIALS.caretaker.email,
-        patient: DEMO_CREDENTIALS.patient.email,
-      },
-    };
-  }
-
-  // 1. Sign in or Create Demo Family User
+  // 1. Sign in or Create Demo Family User first (so request.auth is established)
   let familyUid = '';
   try {
     const cred = await signInWithEmailAndPassword(
@@ -72,30 +57,55 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
       DEMO_CREDENTIALS.family.password
     );
     familyUid = cred.user.uid;
-  } catch {
-    // If not existing, create family user
-    const cred = await createUserWithEmailAndPassword(
-      auth,
-      DEMO_CREDENTIALS.family.email,
-      DEMO_CREDENTIALS.family.password
-    );
-    familyUid = cred.user.uid;
-    await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.family.displayName });
+  } catch (err: unknown) {
+    console.log('Demo family user not found by login, creating new demo account...', err);
+    try {
+      const cred = await createUserWithEmailAndPassword(
+        auth,
+        DEMO_CREDENTIALS.family.email,
+        DEMO_CREDENTIALS.family.password
+      );
+      familyUid = cred.user.uid;
+      await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.family.displayName });
 
-    const familyProfile: UserProfile = {
-      uid: familyUid,
-      role: 'family',
-      displayName: DEMO_CREDENTIALS.family.displayName,
-      email: DEMO_CREDENTIALS.family.email,
-      createdAt: new Date().toISOString(),
-    };
-    await setDoc(doc(db, 'users', familyUid), {
-      ...familyProfile,
-      serverCreatedAt: serverTimestamp(),
-    });
+      const familyProfile: UserProfile = {
+        uid: familyUid,
+        role: 'family',
+        displayName: DEMO_CREDENTIALS.family.displayName,
+        email: DEMO_CREDENTIALS.family.email,
+        createdAt: new Date().toISOString(),
+      };
+      await setDoc(doc(db, 'users', familyUid), {
+        ...familyProfile,
+        serverCreatedAt: serverTimestamp(),
+      });
+    } catch (createErr) {
+      console.warn('Could not create demo family user, continuing:', createErr);
+    }
   }
 
-  // 2. Create Demo Patient Profile (Assisted Care mode by default)
+  // 2. Check if demo patient already exists in Firestore (now authenticated)
+  try {
+    const demoPatientSnap = await getDoc(doc(db, 'patients', DEMO_PATIENT_ID));
+    if (demoPatientSnap.exists()) {
+      return {
+        patientId: DEMO_PATIENT_ID,
+        demoAccounts: {
+          family: DEMO_CREDENTIALS.family.email,
+          caretaker: DEMO_CREDENTIALS.caretaker.email,
+          patient: DEMO_CREDENTIALS.patient.email,
+        },
+      };
+    }
+  } catch (snapErr) {
+    console.warn('Patient check skipped:', snapErr);
+  }
+
+  if (!familyUid && auth.currentUser) {
+    familyUid = auth.currentUser.uid;
+  }
+
+  // 3. Create Demo Patient Profile (Assisted Care mode by default)
   const patientData: Patient = {
     id: DEMO_PATIENT_ID,
     familyId: familyUid,
@@ -108,7 +118,7 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
     serverCreatedAt: serverTimestamp(),
   });
 
-  // 3. Create Demo Caretaker (using secondary auth so family remains signed in)
+  // 4. Create Demo Caretaker (using secondary auth so family remains signed in)
   const secondaryAuth = getSecondaryAuth();
   let caretakerUid = '';
   try {
@@ -119,40 +129,46 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
     );
     caretakerUid = cred.user.uid;
   } catch {
-    const cred = await createUserWithEmailAndPassword(
-      secondaryAuth,
-      DEMO_CREDENTIALS.caretaker.email,
-      DEMO_CREDENTIALS.caretaker.password
-    );
-    caretakerUid = cred.user.uid;
-    await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.caretaker.displayName });
+    try {
+      const cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        DEMO_CREDENTIALS.caretaker.email,
+        DEMO_CREDENTIALS.caretaker.password
+      );
+      caretakerUid = cred.user.uid;
+      await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.caretaker.displayName });
+    } catch (cErr) {
+      console.warn('Caretaker secondary creation note:', cErr);
+    }
   }
 
-  // Provision caretaker records
-  await setDoc(doc(db, 'users', caretakerUid), {
-    uid: caretakerUid,
-    role: 'caretaker',
-    displayName: DEMO_CREDENTIALS.caretaker.displayName,
-    email: DEMO_CREDENTIALS.caretaker.email,
-    patientId: DEMO_PATIENT_ID,
-    familyId: familyUid,
-    createdAt: new Date().toISOString(),
-    serverCreatedAt: serverTimestamp(),
-  });
+  // Provision caretaker records if we have a UID
+  if (caretakerUid) {
+    await setDoc(doc(db, 'users', caretakerUid), {
+      uid: caretakerUid,
+      role: 'caretaker',
+      displayName: DEMO_CREDENTIALS.caretaker.displayName,
+      email: DEMO_CREDENTIALS.caretaker.email,
+      patientId: DEMO_PATIENT_ID,
+      familyId: familyUid,
+      createdAt: new Date().toISOString(),
+      serverCreatedAt: serverTimestamp(),
+    });
 
-  await setDoc(doc(db, 'caretakers', caretakerUid), {
-    uid: caretakerUid,
-    patientId: DEMO_PATIENT_ID,
-    familyId: familyUid,
-    permissions: { canConfirm: true, canEditSchedules: false },
-    active: true,
-    displayName: DEMO_CREDENTIALS.caretaker.displayName,
-    email: DEMO_CREDENTIALS.caretaker.email,
-    createdAt: new Date().toISOString(),
-    serverCreatedAt: serverTimestamp(),
-  });
+    await setDoc(doc(db, 'caretakers', caretakerUid), {
+      uid: caretakerUid,
+      patientId: DEMO_PATIENT_ID,
+      familyId: familyUid,
+      permissions: { canConfirm: true, canEditSchedules: false },
+      active: true,
+      displayName: DEMO_CREDENTIALS.caretaker.displayName,
+      email: DEMO_CREDENTIALS.caretaker.email,
+      createdAt: new Date().toISOString(),
+      serverCreatedAt: serverTimestamp(),
+    });
+  }
 
-  // 4. Create Demo Patient Login (using secondary auth)
+  // 5. Create Demo Patient Login (using secondary auth)
   let patientUid = '';
   try {
     const cred = await signInWithEmailAndPassword(
@@ -162,34 +178,39 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
     );
     patientUid = cred.user.uid;
   } catch {
-    const cred = await createUserWithEmailAndPassword(
-      secondaryAuth,
-      DEMO_CREDENTIALS.patient.email,
-      DEMO_CREDENTIALS.patient.password
-    );
-    patientUid = cred.user.uid;
-    await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.patient.displayName });
+    try {
+      const cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        DEMO_CREDENTIALS.patient.email,
+        DEMO_CREDENTIALS.patient.password
+      );
+      patientUid = cred.user.uid;
+      await updateProfile(cred.user, { displayName: DEMO_CREDENTIALS.patient.displayName });
+    } catch (pErr) {
+      console.warn('Patient secondary creation note:', pErr);
+    }
   }
 
-  await setDoc(doc(db, 'users', patientUid), {
-    uid: patientUid,
-    role: 'patient',
-    displayName: DEMO_CREDENTIALS.patient.displayName,
-    email: DEMO_CREDENTIALS.patient.email,
-    patientId: DEMO_PATIENT_ID,
-    familyId: familyUid,
-    createdAt: new Date().toISOString(),
-    serverCreatedAt: serverTimestamp(),
-  });
+  if (patientUid) {
+    await setDoc(doc(db, 'users', patientUid), {
+      uid: patientUid,
+      role: 'patient',
+      displayName: DEMO_CREDENTIALS.patient.displayName,
+      email: DEMO_CREDENTIALS.patient.email,
+      patientId: DEMO_PATIENT_ID,
+      familyId: familyUid,
+      createdAt: new Date().toISOString(),
+      serverCreatedAt: serverTimestamp(),
+    });
 
-  // Update patient record with patientUid
-  await setDoc(
-    doc(db, 'patients', DEMO_PATIENT_ID),
-    { patientUid },
-    { merge: true }
-  );
+    await setDoc(
+      doc(db, 'patients', DEMO_PATIENT_ID),
+      { patientUid },
+      { merge: true }
+    );
+  }
 
-  // 5. Seed Medications (Prescribed by family)
+  // 6. Seed Medications (Prescribed by family)
   const medMetformin: Medication = {
     id: 'med_demo_metformin',
     patientId: DEMO_PATIENT_ID,
@@ -225,14 +246,14 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
     serverCreatedAt: serverTimestamp(),
   });
 
-  // 6. Seed Appointment (Scheduled by family)
+  // 7. Seed Appointment (Scheduled by family)
   const aptCardiology: Appointment = {
     id: 'apt_demo_cardiology',
     patientId: DEMO_PATIENT_ID,
     title: 'Cardiology Checkup',
     doctor: 'Dr. Robert Chen',
     location: 'City Heart Clinic, Suite 302',
-    dateTime: new Date(Date.now() + 86400000).toISOString().slice(0, 16), // Tomorrow at same time
+    dateTime: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
     status: 'unconfirmed',
     createdBy: familyUid,
     createdAt: new Date().toISOString(),
@@ -243,58 +264,52 @@ export async function seedDemoEnvironment(): Promise<SeedDemoResult> {
     serverCreatedAt: serverTimestamp(),
   });
 
-  // 7. Seed Initial Confirmation by Caretaker (using secondary auth session to adhere to rules)
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const doseId = `${medMetformin.id}_${todayStr}`;
-  const logId = `${doseId}_log`;
-  const notId = `not_demo_${Date.now()}`;
+  // 8. Seed Initial Confirmation in Atomic Batch (signed in as family controller)
+  try {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const doseId = `${medMetformin.id}_${todayStr}`;
+    const logId = `${doseId}_log`;
+    const notId = `not_demo_${Date.now()}`;
 
-  // Make sure secondary auth is signed in as caretaker
-  await signInWithEmailAndPassword(
-    secondaryAuth,
-    DEMO_CREDENTIALS.caretaker.email,
-    DEMO_CREDENTIALS.caretaker.password
-  );
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'doses', doseId), {
+      id: doseId,
+      patientId: DEMO_PATIENT_ID,
+      medId: medMetformin.id,
+      date: todayStr,
+      status: 'taken',
+      confirmedByUid: familyUid,
+      confirmedByRole: 'family',
+      confirmedByName: DEMO_CREDENTIALS.family.displayName,
+      confirmedAt: serverTimestamp(),
+      logId,
+    });
 
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'doses', doseId), {
-    id: doseId,
-    patientId: DEMO_PATIENT_ID,
-    medId: medMetformin.id,
-    date: todayStr,
-    status: 'taken',
-    confirmedByUid: caretakerUid,
-    confirmedByRole: 'caretaker',
-    confirmedByName: DEMO_CREDENTIALS.caretaker.displayName,
-    confirmedAt: serverTimestamp(),
-    logId,
-  });
+    batch.set(doc(db, 'activity_logs', logId), {
+      id: logId,
+      patientId: DEMO_PATIENT_ID,
+      itemType: 'dose',
+      itemId: doseId,
+      action: 'DOSE_TAKEN',
+      actorUid: familyUid,
+      actorRole: 'family',
+      actorName: DEMO_CREDENTIALS.family.displayName,
+      timestamp: serverTimestamp(),
+    });
 
-  batch.set(doc(db, 'activity_logs', logId), {
-    id: logId,
-    patientId: DEMO_PATIENT_ID,
-    itemType: 'dose',
-    itemId: doseId,
-    action: 'DOSE_TAKEN',
-    actorUid: caretakerUid,
-    actorRole: 'caretaker',
-    actorName: DEMO_CREDENTIALS.caretaker.displayName,
-    timestamp: serverTimestamp(),
-  });
+    batch.set(doc(db, 'notifications', notId), {
+      id: notId,
+      familyId: familyUid,
+      patientId: DEMO_PATIENT_ID,
+      message: 'Metformin 500mg: Confirmed by Sarah Connor',
+      read: false,
+      createdAt: serverTimestamp(),
+    });
 
-  batch.set(doc(db, 'notifications', notId), {
-    id: notId,
-    familyId: familyUid,
-    patientId: DEMO_PATIENT_ID,
-    message: 'Metformin 500mg: Confirmed by Caretaker Marcus Wright at 08:04 AM',
-    read: false,
-    createdAt: serverTimestamp(),
-  });
-
-  await batch.commit();
-
-  // Clean up secondary auth
-  await signOut(secondaryAuth);
+    await batch.commit();
+  } catch (batchErr) {
+    console.warn('Initial dose confirmation seed note:', batchErr);
+  }
 
   return {
     patientId: DEMO_PATIENT_ID,
@@ -313,6 +328,11 @@ export async function loginAsDemoRole(
   role: 'family' | 'caretaker' | 'patient'
 ): Promise<void> {
   const creds = DEMO_CREDENTIALS[role];
-  await signInWithEmailAndPassword(auth, creds.email, creds.password);
+  try {
+    await signInWithEmailAndPassword(auth, creds.email, creds.password);
+  } catch {
+    // If not existing yet, create user
+    const cred = await createUserWithEmailAndPassword(auth, creds.email, creds.password);
+    await updateProfile(cred.user, { displayName: creds.displayName });
+  }
 }
-

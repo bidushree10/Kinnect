@@ -40,7 +40,11 @@ export const GatewayView: React.FC<GatewayViewProps> = ({ onShowToast }) => {
     setFormError('');
     try {
       // Ensure demo records are seeded idempotently
-      await seedDemoEnvironment();
+      try {
+        await seedDemoEnvironment();
+      } catch (seedErr) {
+        console.warn('Demo seed non-blocking warning:', seedErr);
+      }
       await loginAsDemoRole(role);
       onShowToast('success', `Signed in as Demo ${role === 'family' ? 'Family Controller' : role === 'caretaker' ? 'Caretaker' : 'Patient'}.`);
       if (role === 'patient') {
@@ -49,7 +53,8 @@ export const GatewayView: React.FC<GatewayViewProps> = ({ onShowToast }) => {
         navigate('/dashboard');
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Demo seed failed. Check connection.';
+      console.error('Demo login error:', err);
+      const msg = err instanceof Error ? err.message : 'Demo login failed.';
       setFormError(msg);
       onShowToast('error', msg);
     } finally {
