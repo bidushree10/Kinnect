@@ -75,5 +75,10 @@ describe('Design System UI Primitives', () => {
 
     rerender(<Badge variant="success">Taken</Badge>);
     expect(screen.getByText('Taken')).toBeInTheDocument();
+
+    rerender(<Badge variant="assisted">Assisted Care</Badge>);
+    const textEl = screen.getByText('Assisted Care');
+    expect(textEl.parentElement).toHaveClass('bg-[#E3EFEF]');
+    expect(textEl.parentElement).toHaveClass('text-[#0A4242]');
   });
 });

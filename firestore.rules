@@ -1,0 +1,225 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isCaretakerActive() {
+      return get(/databases/$(database)/documents/caretakers/$(request.auth.uid)).data.active == true;
+    }
+
+    function getCaretakerData() {
+      return get(/databases/$(database)/documents/caretakers/$(request.auth.uid)).data;
+    }
+
+    function getPatientData(patientId) {
+      return get(/databases/$(database)/documents/patients/$(patientId)).data;
+    }
+
+    function isPatientFamilyOwner(patientId) {
+      return getPatientData(patientId).familyId == request.auth.uid;
+    }
+
+    function isLinkedToPatient(patientId) {
+      let user = getUserData();
+      return (user.role == 'family' && isPatientFamilyOwner(patientId)) ||
+             (user.role == 'patient' && user.patientId == patientId) ||
+             (user.role == 'caretaker' && user.patientId == patientId && isCaretakerActive());
+    }
+
+    // 1. users/{uid}
+    match /users/{uid} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == uid ||
+        (getUserData().role == 'family' && resource.data.familyId == request.auth.uid)
+      );
+
+      allow create: if isAuthenticated() && (
+        // Case A: User signs up themselves as family (must not set patientId or familyId)
+        (request.auth.uid == uid && request.resource.data.role == 'family' &&
+         !('patientId' in request.resource.data) && !('familyId' in request.resource.data)) ||
+        // Case B: Family member provisions patient or caretaker user doc
+        (getUserData().role == 'family' &&
+         request.resource.data.familyId == request.auth.uid &&
+         (request.resource.data.role == 'patient' || request.resource.data.role == 'caretaker') &&
+         isPatientFamilyOwner(request.resource.data.patientId))
+      );
+
+      allow update: if isAuthenticated() && request.auth.uid == uid &&
+        request.resource.data.role == resource.data.role;
+
+      allow delete: if false;
+    }
+
+    // 2. patients/{patientId}
+    match /patients/{patientId} {
+      allow read: if isAuthenticated() && (
+        resource.data.familyId == request.auth.uid ||
+        (getUserData().patientId == patientId &&
+         (getUserData().role == 'patient' || (getUserData().role == 'caretaker' && isCaretakerActive())))
+      );
+
+      allow create: if isAuthenticated() &&
+        getUserData().role == 'family' &&
+        request.resource.data.familyId == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        resource.data.familyId == request.auth.uid &&
+        request.resource.data.familyId == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // 3. caretakers/{caretakerUid}
+    match /caretakers/{caretakerUid} {
+      allow read: if isAuthenticated() && (
+        resource.data.familyId == request.auth.uid ||
+        request.auth.uid == caretakerUid
+      );
+
+      allow create: if isAuthenticated() &&
+        getUserData().role == 'family' &&
+        request.resource.data.familyId == request.auth.uid &&
+        isPatientFamilyOwner(request.resource.data.patientId);
+
+      allow update: if isAuthenticated() &&
+        // Caretaker can NEVER edit their own permissions
+        request.auth.uid != caretakerUid &&
+        getUserData().role == 'family' &&
+        resource.data.familyId == request.auth.uid;
+
+      allow delete: if isAuthenticated() &&
+        getUserData().role == 'family' &&
+        resource.data.familyId == request.auth.uid;
+    }
+
+    // 4. medications/{medId}
+    match /medications/{medId} {
+      allow read: if isAuthenticated() && isLinkedToPatient(resource.data.patientId);
+
+      allow create: if isAuthenticated() &&
+        getUserData().role == 'family' &&
+        isPatientFamilyOwner(request.resource.data.patientId);
+
+      allow update: if isAuthenticated() && isLinkedToPatient(resource.data.patientId) && (
+        // Clinical prescription fields can NEVER be modified once created
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'name', 'strength', 'dosage', 'frequency', 'patientId', 'createdBy', 'createdAt'
+        ]) && (
+          // Family owner can update scheduledTime or active
+          isPatientFamilyOwner(resource.data.patientId) ||
+          // Caretaker can update ONLY IF active AND canEditSchedules is granted, and ONLY modifying scheduledTime
+          (getUserData().role == 'caretaker' &&
+           isCaretakerActive() &&
+           getCaretakerData().permissions.canEditSchedules == true &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['scheduledTime']))
+        )
+      );
+
+      allow delete: if isAuthenticated() && isPatientFamilyOwner(resource.data.patientId);
+    }
+
+    // 5. doses/{doseId}
+    match /doses/{doseId} {
+      allow read: if isAuthenticated() && isLinkedToPatient(resource.data.patientId);
+
+      // Create-only upon confirmation in atomic batch
+      allow create: if isAuthenticated() && (
+        // Document ID equals {medId}_{date}
+        doseId == request.resource.data.medId + '_' + request.resource.data.date &&
+        // Date format YYYY-MM-DD
+        request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        // Status is strictly taken (missed is never allowed)
+        request.resource.data.status == 'taken' &&
+        // Confirmer fields strictly tied to caller session
+        request.resource.data.confirmedByUid == request.auth.uid &&
+        request.resource.data.confirmedByRole == getUserData().role &&
+        request.resource.data.confirmedByName == getUserData().displayName &&
+        request.resource.data.confirmedAt == request.time &&
+        isLinkedToPatient(request.resource.data.patientId) &&
+        // Atomic batch: requires accompanying activity_logs entry
+        (
+          existsAfter(/databases/$(database)/documents/activity_logs/$(request.resource.data.logId)) ||
+          existsAfter(/databases/$(database)/documents/activity_logs/$(doseId + '_log'))
+        )
+      );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 6. appointments/{aptId}
+    match /appointments/{aptId} {
+      allow read: if isAuthenticated() && isLinkedToPatient(resource.data.patientId);
+
+      allow create: if isAuthenticated() &&
+        getUserData().role == 'family' &&
+        isPatientFamilyOwner(request.resource.data.patientId);
+
+      allow update: if isAuthenticated() && (
+        // Family member can edit appointment details
+        isPatientFamilyOwner(resource.data.patientId) ||
+        // Linked patient or active caretaker confirms attendance
+        (
+          isLinkedToPatient(resource.data.patientId) &&
+          resource.data.status == 'unconfirmed' &&
+          request.resource.data.status == 'attended' &&
+          request.resource.data.confirmedByUid == request.auth.uid &&
+          request.resource.data.confirmedByRole == getUserData().role &&
+          request.resource.data.confirmedByName == getUserData().displayName &&
+          request.resource.data.confirmedAt == request.time &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'confirmedByUid', 'confirmedByRole', 'confirmedByName', 'confirmedAt'
+          ])
+        )
+      );
+
+      allow delete: if isAuthenticated() && isPatientFamilyOwner(resource.data.patientId);
+    }
+
+    // 7. activity_logs/{logId}
+    match /activity_logs/{logId} {
+      // Patient, family, and active caretaker can read all logs for their patient
+      allow read: if isAuthenticated() && isLinkedToPatient(resource.data.patientId);
+
+      // Create-only audit trail
+      allow create: if isAuthenticated() && (
+        request.resource.data.actorUid == request.auth.uid &&
+        request.resource.data.actorRole == getUserData().role &&
+        request.resource.data.actorName == getUserData().displayName &&
+        request.resource.data.timestamp == request.time &&
+        isLinkedToPatient(request.resource.data.patientId)
+      );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 8. notifications/{notId}
+    match /notifications/{notId} {
+      allow read: if isAuthenticated() && resource.data.familyId == request.auth.uid;
+
+      allow create: if isAuthenticated() && (
+        isLinkedToPatient(request.resource.data.patientId) &&
+        request.resource.data.familyId == getPatientData(request.resource.data.patientId).familyId &&
+        request.resource.data.read == false &&
+        request.resource.data.createdAt == request.time
+      );
+
+      allow update: if isAuthenticated() &&
+        resource.data.familyId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+
+      allow delete: if isAuthenticated() && resource.data.familyId == request.auth.uid;
+    }
+  }
+}
+

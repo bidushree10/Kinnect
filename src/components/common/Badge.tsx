@@ -19,7 +19,7 @@ export const Badge: React.FC<BadgeProps> = ({
   const defaultIcons = {
     pending: <Clock className="w-4 h-4 text-[#78350F]" strokeWidth={2.25} aria-hidden="true" />,
     success: <Check className="w-4 h-4 text-[#0A4242]" strokeWidth={2.5} aria-hidden="true" />,
-    assisted: <HeartHandshake className="w-4 h-4 text-[#78350F]" strokeWidth={2.25} aria-hidden="true" />,
+    assisted: <HeartHandshake className="w-4 h-4 text-[#0A4242]" strokeWidth={2.25} aria-hidden="true" />,
     independent: <UserCheck className="w-4 h-4 text-[#0A4242]" strokeWidth={2.25} aria-hidden="true" />,
     neutral: null,
   };
@@ -27,7 +27,7 @@ export const Badge: React.FC<BadgeProps> = ({
   const variantStyles = {
     pending: 'bg-[#FEF3C7] text-[#78350F] border-l-3 border-[#D97706] font-bold',
     success: 'bg-[#E3EFEF] text-[#0A4242] border border-[#0F5C5C] font-bold',
-    assisted: 'bg-[#FEF3C7] text-[#78350F] border border-[#D97706]/40 font-bold',
+    assisted: 'bg-[#E3EFEF] text-[#0A4242] border border-[#0F5C5C]/40 font-bold',
     independent: 'bg-[#E3EFEF] text-[#0A4242] border border-[#0F5C5C]/40 font-bold',
     neutral: 'bg-[#F3EFE6] text-[#524E48] border border-[#D6D1C7] font-medium',
   }[variant];
