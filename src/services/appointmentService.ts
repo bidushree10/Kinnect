@@ -66,13 +66,25 @@ export async function addAppointment(input: AddAppointmentInput): Promise<Appoin
  * Retrieves all appointments for a patient.
  */
 export async function getAppointments(patientId: string): Promise<Appointment[]> {
-  const q = query(
-    collection(db, 'appointments'),
-    where('patientId', '==', patientId),
-    orderBy('dateTime', 'asc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => d.data() as Appointment);
+  try {
+    const q = query(
+      collection(db, 'appointments'),
+      where('patientId', '==', patientId),
+      orderBy('dateTime', 'asc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as Appointment);
+  } catch (err) {
+    console.warn('Fallback getAppointments query without composite index:', err);
+    const qFallback = query(
+      collection(db, 'appointments'),
+      where('patientId', '==', patientId)
+    );
+    const snap = await getDocs(qFallback);
+    return snap.docs
+      .map((d) => d.data() as Appointment)
+      .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+  }
 }
 
 /**

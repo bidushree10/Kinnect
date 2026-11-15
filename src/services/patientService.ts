@@ -50,9 +50,16 @@ export async function createPatientProfile(
     attempts++;
     const candidateId = generatePatientId();
     const patientDocRef = doc(db, 'patients', candidateId);
-    const existingSnap = await getDoc(patientDocRef);
+    let candidateExists = false;
+    try {
+      const existingSnap = await getDoc(patientDocRef);
+      candidateExists = existingSnap.exists();
+    } catch {
+      // If getDoc throws permission error on non-existing document, candidate is unused
+      candidateExists = false;
+    }
 
-    if (!existingSnap.exists()) {
+    if (!candidateExists) {
       const newPatient: Patient = {
         id: candidateId,
         familyId: currentFamilyUser.uid,
@@ -95,6 +102,15 @@ export async function getPatientForFamily(familyUid: string): Promise<Patient | 
     return null;
   }
   return snap.docs[0].data() as Patient;
+}
+
+/**
+ * Fetches all patient profiles managed by the current family member.
+ */
+export async function getPatientsForFamily(familyUid: string): Promise<Patient[]> {
+  const q = query(collection(db, 'patients'), where('familyId', '==', familyUid));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => d.data() as Patient);
 }
 
 /**

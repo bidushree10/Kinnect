@@ -25,29 +25,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activePatient, setActivePatient] = useState<Patient | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfileAndPatient = async (user: User) => {
-    try {
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (userDoc.exists()) {
-        const profile = userDoc.data() as UserProfile;
-        setUserProfile(profile);
+  const fetchProfileAndPatient = async (user: User, retries = 3) => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const profile = userDoc.data() as UserProfile;
+          setUserProfile(profile);
 
-        // Fetch patient based on role
-        if (profile.role === 'family') {
-          const patient = await getPatientForFamily(profile.uid);
-          setActivePatient(patient);
-        } else if (profile.patientId) {
-          const patient = await getPatient(profile.patientId);
-          setActivePatient(patient);
+          // Fetch patient based on role
+          if (profile.role === 'family') {
+            const patient = await getPatientForFamily(profile.uid);
+            setActivePatient(patient);
+          } else if (profile.patientId) {
+            const patient = await getPatient(profile.patientId);
+            setActivePatient(patient);
+          }
+          return profile;
         }
-      } else {
-        setUserProfile(null);
-        setActivePatient(null);
+        // If profile document hasn't completed setDoc yet, wait and retry
+        if (attempt < retries - 1) {
+          await new Promise((res) => setTimeout(res, 400));
+        }
+      } catch (err) {
+        console.error('Error fetching user profile:', err);
       }
-    } catch {
-      setUserProfile(null);
-      setActivePatient(null);
     }
+    return null;
   };
 
   useEffect(() => {

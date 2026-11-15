@@ -17,15 +17,31 @@ export async function getActivityLogs(
   patientId: string,
   limitCount = 50
 ): Promise<ActivityLog[]> {
-  const q = query(
-    collection(db, 'activity_logs'),
-    where('patientId', '==', patientId),
-    orderBy('timestamp', 'desc'),
-    limit(limitCount)
-  );
-
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => d.data() as ActivityLog);
+  try {
+    const q = query(
+      collection(db, 'activity_logs'),
+      where('patientId', '==', patientId),
+      orderBy('timestamp', 'desc'),
+      limit(limitCount)
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as ActivityLog);
+  } catch (err) {
+    console.warn('Fallback getActivityLogs query without composite index:', err);
+    const qFallback = query(
+      collection(db, 'activity_logs'),
+      where('patientId', '==', patientId),
+      limit(limitCount)
+    );
+    const snap = await getDocs(qFallback);
+    return snap.docs
+      .map((d) => d.data() as ActivityLog)
+      .sort((a, b) => {
+        const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeB - timeA;
+      });
+  }
 }
 
 /**
