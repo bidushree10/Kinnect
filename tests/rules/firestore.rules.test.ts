@@ -7,7 +7,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import * as fs from 'fs';
 import * as path from 'path';
-import { doc, setDoc, getDoc, updateDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 
 const PROJECT_ID = 'demo-kinnect-rules-test';
 const RULES_PATH = path.resolve(__dirname, '../../firestore.rules');
@@ -501,6 +501,362 @@ describe('Firestore Security Rules (Phase 2)', () => {
           action: 'FORGED_EDIT',
         })
       );
+    });
+  });
+
+  // ==========================================
+  // 7. Phases 3 & 4 Extended Rules Coverage
+  // ==========================================
+  describe('Phases 3 & 4 Extended Rules Coverage', () => {
+    it('denies an inactive caretaker from confirming a dose', async () => {
+      const revokedContext = testEnv.authenticatedContext(REVOKED_CARETAKER_UID);
+      const db = revokedContext.firestore();
+
+      const todayStr = '2026-11-20';
+      const medId = 'med_metformin';
+      const doseId = `${medId}_${todayStr}`;
+      const logId = `${doseId}_log`;
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'doses', doseId), {
+        id: doseId,
+        patientId: PATIENT_ID,
+        medId,
+        date: todayStr,
+        status: 'taken',
+        confirmedByUid: REVOKED_CARETAKER_UID,
+        confirmedByRole: 'caretaker',
+        confirmedByName: 'Revoked Dave',
+        confirmedAt: serverTimestamp(),
+        logId,
+      });
+      batch.set(doc(db, 'activity_logs', logId), {
+        id: logId,
+        patientId: PATIENT_ID,
+        itemType: 'dose',
+        itemId: doseId,
+        action: 'DOSE_TAKEN',
+        actorUid: REVOKED_CARETAKER_UID,
+        actorRole: 'caretaker',
+        actorName: 'Revoked Dave',
+        timestamp: serverTimestamp(),
+      });
+
+      await assertFails(batch.commit());
+    });
+
+    it('denies a user of another family from reading or modifying patient data', async () => {
+      const otherFamilyContext = testEnv.authenticatedContext(OTHER_FAMILY_UID);
+      const db = otherFamilyContext.firestore();
+
+      // Read Patient A medication
+      await assertFails(getDoc(doc(db, 'medications', 'med_metformin')));
+
+      // Create appointment for Patient A
+      await assertFails(
+        setDoc(doc(db, 'appointments', 'unauthorized_apt'), {
+          id: 'unauthorized_apt',
+          patientId: PATIENT_ID,
+          title: 'Intrusion Test',
+          doctor: 'Dr. Hack',
+          location: 'Remote',
+          dateTime: '2026-11-20T10:00',
+          status: 'unconfirmed',
+          createdBy: OTHER_FAMILY_UID,
+          createdAt: new Date().toISOString(),
+        })
+      );
+    });
+
+    it('denies dose confirmation with forged confirmer role (role != user profile)', async () => {
+      const caretakerContext = testEnv.authenticatedContext(CARETAKER_UID);
+      const db = caretakerContext.firestore();
+
+      const todayStr = '2026-11-21';
+      const medId = 'med_metformin';
+      const doseId = `${medId}_${todayStr}`;
+      const logId = `${doseId}_log`;
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'doses', doseId), {
+        id: doseId,
+        patientId: PATIENT_ID,
+        medId,
+        date: todayStr,
+        status: 'taken',
+        confirmedByUid: CARETAKER_UID,
+        confirmedByRole: 'family', // FORGED ROLE! (User is caretaker, not family)
+        confirmedByName: 'Caretaker Bob',
+        confirmedAt: serverTimestamp(),
+        logId,
+      });
+      batch.set(doc(db, 'activity_logs', logId), {
+        id: logId,
+        patientId: PATIENT_ID,
+        itemType: 'dose',
+        itemId: doseId,
+        action: 'DOSE_TAKEN',
+        actorUid: CARETAKER_UID,
+        actorRole: 'family',
+        actorName: 'Caretaker Bob',
+        timestamp: serverTimestamp(),
+      });
+
+      await assertFails(batch.commit());
+    });
+
+    it('denies modifying locked medication name or frequency after creation', async () => {
+      const familyContext = testEnv.authenticatedContext(FAMILY_UID);
+      const db = familyContext.firestore();
+
+      // Attempting to change locked name
+      await assertFails(
+        updateDoc(doc(db, 'medications', 'med_metformin'), {
+          name: 'Metformin XR',
+        })
+      );
+
+      // Attempting to change locked frequency
+      await assertFails(
+        updateDoc(doc(db, 'medications', 'med_metformin'), {
+          frequency: 'Twice daily',
+        })
+      );
+    });
+
+    it('denies updating or deleting an existing dose document (create-only)', async () => {
+      const doseId = 'med_metformin_2026-11-22';
+      const logId = `${doseId}_log`;
+
+      // Pre-seed a confirmed dose
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await setDoc(doc(context.firestore(), 'doses', doseId), {
+          id: doseId,
+          patientId: PATIENT_ID,
+          medId: 'med_metformin',
+          date: '2026-11-22',
+          status: 'taken',
+          confirmedByUid: FAMILY_UID,
+          confirmedByRole: 'family',
+          confirmedByName: 'Sarah Family',
+          confirmedAt: new Date().toISOString(),
+          logId,
+        });
+      });
+
+      const familyContext = testEnv.authenticatedContext(FAMILY_UID);
+      const db = familyContext.firestore();
+
+      // Denies updating a dose
+      await assertFails(
+        updateDoc(doc(db, 'doses', doseId), {
+          confirmedByName: 'Tampered Name',
+        })
+      );
+
+      // Denies deleting a dose
+      await assertFails(deleteDoc(doc(db, 'doses', doseId)));
+    });
+
+    it('denies deleting an activity log entry (immutable audit trail)', async () => {
+      const logId = 'log_audit_preserve';
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await setDoc(doc(context.firestore(), 'activity_logs', logId), {
+          id: logId,
+          patientId: PATIENT_ID,
+          itemType: 'dose',
+          itemId: 'med_metformin',
+          action: 'DOSE_TAKEN',
+          actorUid: FAMILY_UID,
+          actorRole: 'family',
+          actorName: 'Sarah Family',
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const familyContext = testEnv.authenticatedContext(FAMILY_UID);
+      const db = familyContext.firestore();
+
+      await assertFails(deleteDoc(doc(db, 'activity_logs', logId)));
+    });
+
+    it('denies confirming the same dose twice', async () => {
+      const caretakerContext = testEnv.authenticatedContext(CARETAKER_UID);
+      const db = caretakerContext.firestore();
+
+      const todayStr = '2026-11-23';
+      const medId = 'med_metformin';
+      const doseId = `${medId}_${todayStr}`;
+      const logId = `${doseId}_log`;
+      const notId = `not_${Date.now()}`;
+
+      // First confirmation batch: succeeds
+      const batch1 = writeBatch(db);
+      batch1.set(doc(db, 'doses', doseId), {
+        id: doseId,
+        patientId: PATIENT_ID,
+        medId,
+        date: todayStr,
+        status: 'taken',
+        confirmedByUid: CARETAKER_UID,
+        confirmedByRole: 'caretaker',
+        confirmedByName: 'Caretaker Bob',
+        confirmedAt: serverTimestamp(),
+        logId,
+      });
+      batch1.set(doc(db, 'activity_logs', logId), {
+        id: logId,
+        patientId: PATIENT_ID,
+        itemType: 'dose',
+        itemId: doseId,
+        action: 'DOSE_TAKEN',
+        actorUid: CARETAKER_UID,
+        actorRole: 'caretaker',
+        actorName: 'Caretaker Bob',
+        timestamp: serverTimestamp(),
+      });
+      batch1.set(doc(db, 'notifications', notId), {
+        id: notId,
+        familyId: FAMILY_UID,
+        patientId: PATIENT_ID,
+        message: 'Dose taken',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+      await assertSucceeds(batch1.commit());
+
+      // Attempt second confirmation for the exact same dose: denied!
+      const logId2 = `${doseId}_log_2`;
+      const batch2 = writeBatch(db);
+      batch2.set(doc(db, 'doses', doseId), {
+        id: doseId,
+        patientId: PATIENT_ID,
+        medId,
+        date: todayStr,
+        status: 'taken',
+        confirmedByUid: CARETAKER_UID,
+        confirmedByRole: 'caretaker',
+        confirmedByName: 'Caretaker Bob',
+        confirmedAt: serverTimestamp(),
+        logId: logId2,
+      });
+      batch2.set(doc(db, 'activity_logs', logId2), {
+        id: logId2,
+        patientId: PATIENT_ID,
+        itemType: 'dose',
+        itemId: doseId,
+        action: 'DOSE_TAKEN',
+        actorUid: CARETAKER_UID,
+        actorRole: 'caretaker',
+        actorName: 'Caretaker Bob',
+        timestamp: serverTimestamp(),
+      });
+
+      await assertFails(batch2.commit());
+    });
+
+    it('allows family member to create an appointment and active caretaker to confirm attendance', async () => {
+      const familyContext = testEnv.authenticatedContext(FAMILY_UID);
+      const dbFamily = familyContext.firestore();
+
+      const aptId = 'apt_cardiology_1';
+      // Family creates appointment: allowed
+      await assertSucceeds(
+        setDoc(doc(dbFamily, 'appointments', aptId), {
+          id: aptId,
+          patientId: PATIENT_ID,
+          title: 'Cardiology Checkup',
+          doctor: 'Dr. Robert Chen',
+          location: 'City Heart Clinic',
+          dateTime: '2026-11-25T10:00',
+          status: 'unconfirmed',
+          createdBy: FAMILY_UID,
+          createdAt: new Date().toISOString(),
+        })
+      );
+
+      // Active caretaker confirms attendance in atomic batch
+      const caretakerContext = testEnv.authenticatedContext(CARETAKER_UID);
+      const dbCaretaker = caretakerContext.firestore();
+      const logId = `${aptId}_log`;
+      const notId = `not_apt_${Date.now()}`;
+
+      const batch = writeBatch(dbCaretaker);
+      batch.update(doc(dbCaretaker, 'appointments', aptId), {
+        status: 'attended',
+        confirmedByUid: CARETAKER_UID,
+        confirmedByRole: 'caretaker',
+        confirmedByName: 'Caretaker Bob',
+        confirmedAt: serverTimestamp(),
+        logId,
+      });
+      batch.set(doc(dbCaretaker, 'activity_logs', logId), {
+        id: logId,
+        patientId: PATIENT_ID,
+        itemType: 'appointment',
+        itemId: aptId,
+        action: 'APPOINTMENT_ATTENDED',
+        actorUid: CARETAKER_UID,
+        actorRole: 'caretaker',
+        actorName: 'Caretaker Bob',
+        timestamp: serverTimestamp(),
+      });
+      batch.set(doc(dbCaretaker, 'notifications', notId), {
+        id: notId,
+        familyId: FAMILY_UID,
+        patientId: PATIENT_ID,
+        message: 'Cardiology Checkup: Attended',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+
+      await assertSucceeds(batch.commit());
+    });
+
+    it('allows independent patient to confirm their own dose in atomic batch', async () => {
+      const patientContext = testEnv.authenticatedContext(PATIENT_UID);
+      const db = patientContext.firestore();
+
+      const todayStr = '2026-11-24';
+      const medId = 'med_metformin';
+      const doseId = `${medId}_${todayStr}`;
+      const logId = `${doseId}_log`;
+      const notId = `not_pat_${Date.now()}`;
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'doses', doseId), {
+        id: doseId,
+        patientId: PATIENT_ID,
+        medId,
+        date: todayStr,
+        status: 'taken',
+        confirmedByUid: PATIENT_UID,
+        confirmedByRole: 'patient',
+        confirmedByName: 'Eleanor Vance',
+        confirmedAt: serverTimestamp(),
+        logId,
+      });
+      batch.set(doc(db, 'activity_logs', logId), {
+        id: logId,
+        patientId: PATIENT_ID,
+        itemType: 'dose',
+        itemId: doseId,
+        action: 'DOSE_TAKEN',
+        actorUid: PATIENT_UID,
+        actorRole: 'patient',
+        actorName: 'Eleanor Vance',
+        timestamp: serverTimestamp(),
+      });
+      batch.set(doc(db, 'notifications', notId), {
+        id: notId,
+        familyId: FAMILY_UID,
+        patientId: PATIENT_ID,
+        message: 'Metformin: Confirmed by Eleanor Vance',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+
+      await assertSucceeds(batch.commit());
     });
   });
 });

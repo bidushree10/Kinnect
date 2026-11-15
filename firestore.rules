@@ -177,8 +177,12 @@ service cloud.firestore {
           request.resource.data.confirmedByName == getUserData().displayName &&
           request.resource.data.confirmedAt == request.time &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status', 'confirmedByUid', 'confirmedByRole', 'confirmedByName', 'confirmedAt'
-          ])
+            'status', 'confirmedByUid', 'confirmedByRole', 'confirmedByName', 'confirmedAt', 'logId'
+          ]) &&
+          (
+            existsAfter(/databases/$(database)/documents/activity_logs/$(request.resource.data.logId)) ||
+            existsAfter(/databases/$(database)/documents/activity_logs/$(aptId + '_log'))
+          )
         )
       );
 
